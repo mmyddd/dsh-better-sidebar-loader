@@ -785,4 +785,22 @@ better-sidebar 的内置 tab 和 viewer 就是参考实现（"吃狗粮"）：
 
 通过 `ctx.betterSidebar` 的三方插件[dsh-sidebar-qa](https://github.com/ChenRuoT/dsh-sidebar-qa) —— 基于 better-sidebar 的划选提问。tab分页: 对话划选 → 右侧面板提问 → 同工作区独立追问会话（❓追问·主题）：快速无思考模型压缩主对话上下文后与引文一起注入，不打断主对话；追问可嵌套、可继续、可归档
 
+### 11.1 由自建 overlay 迁移过来：dsh-code-review（进行中）
+
+[dsh-code-review](https://github.com/dsh-plugins/dsh-code-review) 是**第一个从「自建 shell overlay」反向迁移到 tab 的案例**，记录在此供同类插件参考。
+
+迁移前它自己承担了全部外壳责任（`src/client.ts` 约 2600 行里相当一部分）：
+
+| 自建的东西 | 具体做法 | 迁移后由谁负责 |
+|---|---|---|
+| 面板宿主 | `document.querySelector('[data-shell-overlay]')`、`.dshDesktopDetailsSurface` | better-sidebar 的 tab 容器 |
+| 与侧栏对齐 | 解析 `frame.style.gridTemplateColumns` 的 px 值 | tab 布局自带 |
+| 折叠联动 | 读 `frame.hasAttribute('data-sidebar-collapsed')` | 同上 |
+| 重渲染自愈 | 自己的 `MutationObserver`（`attributeFilter: ['style','data-sidebar-collapsed']`） | 不再需要 |
+| 打开文件 | `ctx.get('workspaces').openPath(path)` | `registerFileViewer` + 内置 code viewer |
+
+**给同类插件的建议**：如果你正在读 `data-shell-overlay`、`.dshDesktopDetailsSurface` 或 `gridTemplateColumns` 来摆放自己的面板，那就是在重造 tab 容器。这些选择器都是 shell 私有形状，dsh 一改就集体失效；`registerTab` 是有契约的替代品。
+
+> 顺带一条与 dshloader 相关的经验：这三个选择器同时也被收进了 `@dsh-plugin/dsh-loader` 的锚点表（`shell.overlay` / `desktop.detailsSurface` / `layout.frame`）。**锚点表是过渡层，不是终点**——它把「N 处各自静默失效」变成「1 处可诊断失效」，而 `registerTab` 才是把外壳责任真正交出去。能用 tab 就别用锚点。
+
 更多插件接入后欢迎在此登记（一句话 + 链接）。
