@@ -505,8 +505,10 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
   // turns the feature on, and turning it off mid-session unregisters the
   // tools and releases the agent terminals they created.
   let toolsDisposers: (() => void) | null = null
-  const syncToolsGate = (scope: { get(): SidebarPrefs }): void => {
-    if (scope.get().agentTerminalTools) {
+  // Passing no scope closes the gate: the settings fiber unloaded, so the
+  // tools it enabled must go with it.
+  const syncToolsGate = (scope?: { get(): SidebarPrefs }): void => {
+    if (scope?.get().agentTerminalTools === true) {
       if (toolsDisposers === null) {
         // Degraded mode (node-pty unavailable): never register the terminal
         // tools — every one of them would fail at spawn time.
@@ -522,13 +524,22 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
       agentPtyRegistry?.disposeAll()
     }
   }
-  // Settings namespace: registered through the loader's stable settings
-  // API. Deployments without a settings service never fill the face and
-  // the client falls back to the schema defaults — same graceful downgrade
-  // the original had.
-  const loaderSettings = ctx.dshLoader.settings
-  const scope = loaderSettings.register<SidebarPrefs>(SIDEBAR_PREFS_NS, PrefsSchema)
-  if (scope !== undefined) {
+  // Settings namespace: registered through the loader's stable settings API.
+  // The `settings` service is a cordis Service with an async init, so it is
+  // NOT in the registry yet when this fiber activates on `dshLoader` alone:
+  // registering eagerly here returned undefined on every boot and left the
+  // side card permanently faceless — the client showed the schema defaults
+  // and every save answered 503 "the settings service is not mounted in this
+  // deployment". A nested inject fiber waits for the service instead, and
+  // cordis re-runs this body whenever that service reloads, while the routes
+  // and terminals above stay up across the reload. Deployments without a
+  // settings service never run it at all: the face stays undefined and the
+  // client falls back to the schema defaults — same graceful downgrade the
+  // original had.
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const loaderSettings = settingsCtx.dshLoader.settings
+    const scope = loaderSettings.register<SidebarPrefs>(SIDEBAR_PREFS_NS, PrefsSchema)
+    if (scope === undefined) return
     const ns: string = settingsNamespace(SIDEBAR_PREFS_NS)
     // Owner-scope reads: the loader's describe() is filtered by its browser
     // whitelist, so a plugin reads its OWN non-whitelisted namespace through
@@ -570,7 +581,15 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
     // and keep them in sync with every settings commit.
     syncToolsGate({ get: () => scope.get() })
     scope.watch(() => { syncToolsGate({ get: () => scope.get() }) })
-  }
+    // Teardown (settings service reload, or plugin unload): drop the face so
+    // the routes answer the honest 503 again instead of writing through a
+    // dead scope, and close the tools gate so the next activation re-reads
+    // the fresh one.
+    settingsCtx.effect(() => () => {
+      settingsFace = undefined
+      syncToolsGate()
+    })
+  })
 
   // ── JSON API ────────────────────────────────────────────────────────────
   const api = buildApi(ctx, ptyManager, agentPtyRegistry, resolved, () => settingsFace)
