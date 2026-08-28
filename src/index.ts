@@ -31,6 +31,7 @@ import {
 import { isWithin, parentOf, requireAbsolute, listDirectory, rootLabel } from './fs-tree.ts'
 import { searchFiles } from './fs-search.ts'
 import { decodeHtmlUrl } from './html-route.ts'
+import { withPickerBridge } from './element-selection-host.ts'
 import { extractFrameAncestors } from './browser-probe.ts'
 import { isTrustedApiRequest, isLoopbackHostname } from './trust-fence.ts'
 import { registerBundleRoute } from './bundle-route.ts'
@@ -715,6 +716,15 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
         }
         const type = mediaTypeForPath(absolute)
         const body = await readFile(absolute)
+        // Element-picker bridge ("选择网页元素加入聊天"): when the optional
+        // element-selection plugin is mounted, every HTML DOCUMENT served here
+        // is piped through its injector (assets stay byte-identical) and the
+        // preview becomes pickable; without that plugin the document is served
+        // untouched. The preview frame is opaque-origin — the sandbox attribute
+        // plus the CSP sandbox directive below — so the GUI can never reach into
+        // its DOM: the picker lives INSIDE the document and answers over
+        // postMessage (see src/element-selection-host.ts).
+        const payload = type === 'text/html' ? withPickerBridge(body.toString('utf8')) : body
         res.writeHead(200, {
           'content-type': type,
           'cache-control': 'no-cache',
@@ -725,11 +735,19 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
           // object-src 'none' blocks plugin embeds.
           'content-security-policy': "sandbox allow-scripts allow-popups allow-downloads allow-modals; object-src 'none'",
         })
-        res.end(body)
+        res.end(payload)
       } catch (error) {
         writeError(res, error)
       }
   }), 'dsh-better-sidebar: /sidebar/html preview route')
+
+  // The element-picker proxy route lives in its own plugin
+  // (@dsh-plugin/dsh-bettersidebar-element-selection): a remote page's bytes
+  // must come from the host for the picker to reach it, and that whole
+  // apparatus — the SSRF fence, the charset handling, the capability token —
+  // belongs with the picker, not with this sidebar. This sidebar only pipes its
+  // OWN html previews through the provider's injector (see withPickerBridge
+  // above) and renders the crosshair when the client half is published.
 
   // ── Terminal WebSocket ──────────────────────────────────────────────────
   // One upgrade endpoint serves both UI-tab terminals (?tab=...) and

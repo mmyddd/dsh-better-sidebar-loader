@@ -15,8 +15,17 @@
  * so a reload restores the visited page; the back/forward stack only tracks
  * address-bar navigations (in-frame link clicks are cross-origin and
  * invisible — a documented limitation).
+ *
+ * Element picker ("选择网页元素加入聊天"): OPTIONAL, provided by the separate
+ * @dsh-plugin/dsh-bettersidebar-element-selection plugin. When that plugin's
+ * client half is published (see src/client/element-selection.ts) the toolbar
+ * shows a crosshair toggle: for a document THIS plugin serves the injected
+ * bridge answers directly, and for a remote site the crosshair re-serves the
+ * page through the provider's proxy first (a cross-origin frame cannot be
+ * scripted at all). Without the plugin the toggle is not rendered.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import clsx from 'clsx'
 import {
   IconChevronLeftOutline14,
   IconChevronRightOutline14,
@@ -27,6 +36,10 @@ import {
 } from '@dsh-plugin/dsh-loader/ui-primitives'
 import { api } from './api.ts'
 import { embeddabilityOf, normalizeBrowserUrl } from './browser.ts'
+import { appendToDraft, readDraft } from './conversation-draft.ts'
+import { useAbsentPicker, useElementSelection } from './element-selection.ts'
+import type { ElementSelectionApi } from './element-selection.ts'
+import { IconCrosshairOutline16 } from './icons.tsx'
 import { patchTab } from './state.ts'
 import { SandboxStatusBar } from './SandboxStatusBar.tsx'
 import { t } from './locales.ts'
@@ -43,8 +56,25 @@ import css from './sidebar.module.css'
 export const BROWSER_IFRAME_SANDBOX =
   'allow-scripts allow-forms allow-popups allow-downloads allow-modals allow-popups-to-escape-sandbox'
 
+/**
+ * The browser tab. The element-selection plugin may load before or after this
+ * bundle, so the presence of its API is read here and the body is REMOUNTED when
+ * it flips — that is what lets the body call the provider's hook (or the absent
+ * stand-in) unconditionally, with a stable hook order inside each mount.
+ */
 export function BrowserView(props: TabComponentProps) {
-  const { store, tab } = props
+  const elementSelection = useElementSelection()
+  return (
+    <BrowserViewBody
+      key={elementSelection === undefined ? 'no-picker' : 'picker'}
+      {...props}
+      elementSelection={elementSelection}
+    />
+  )
+}
+
+function BrowserViewBody(props: TabComponentProps & { elementSelection: ElementSelectionApi | undefined }) {
+  const { store, tab, ctx, scope, elementSelection } = props
   // The current address (initialized from the persisted tab.path so a
   // reload restores the visited page).
   const [url, setUrl] = useState<string | undefined>(tab.path)
@@ -65,7 +95,98 @@ export function BrowserView(props: TabComponentProps) {
   const [embedBlocked, setEmbedBlocked] = useState<string | null>(null)
   /** The user asked to load the refused site anyway (keeps the plain iframe). */
   const [forceEmbed, setForceEmbed] = useState(false)
-
+  /** The live iframe (the element picker posts into its contentWindow). */
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  // The element picker: enabled only once the framed document's bridge
+  // answers the ready handshake (never for a cross-origin site).
+  /** Whether the frame currently shows the picker proxy's copy of the page
+   *  (opt-in per navigation: the crosshair turns it on, a navigation or the
+   *  restore action turns it off). */
+  const [proxied, setProxied] = useState(false)
+  /** The proxy route's capability token (fetched over the fenced API when the
+   *  crosshair asks for proxied picking; the sandboxed frame's navigation
+   *  carries Origin: null, which the route's fence refuses on its own). */
+  const [proxyToken, setProxyToken] = useState<string | null>(null)
+  /** A crosshair press that is waiting for the proxied document's bridge. */
+  const autoStartRef = useRef(false)
+  // One of these two hooks runs for the whole life of this mount: the parent
+  // keys the remount on the provider's presence, so the call order is stable.
+  const pickerOptions = {
+    frame: () => frameRef.current,
+    // The proxied document lives on the provider's route; the capture must
+    // still name the site the user is looking at.
+    pageUrl: () => url,
+    onPicked: (element: { tagName: string; pageUrl: string }) => {
+      // ZCode numbers its blocks inside one "# Web page elements:" section;
+      // reading the draft first keeps that numbering when several elements are
+      // picked into the same message.
+      const insert = elementSelection?.buildWebElementInsert(element, readDraft(ctx, scope.sessionId))
+      if (insert !== undefined) appendToDraft(ctx, scope.sessionId, insert, '\n\n')
+    },
+  }
+  const picker = elementSelection === undefined ? useAbsentPicker() : elementSelection.useElementPicker(pickerOptions)
+  /** Whether this address could be re-served by the picker proxy at all. */
+  const canProxy = elementSelection?.isProxyablePage(url) ?? false
+  const pickerRef = useRef(picker)
+  pickerRef.current = picker
+  // Proxied picking is a two-step: the crosshair swaps the frame's src, and
+  // the session starts as soon as the injected bridge answers the handshake.
+  useEffect(() => {
+    if (!picker.ready || !autoStartRef.current) return
+    autoStartRef.current = false
+    pickerRef.current.toggle()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picker.ready])
+  /** Static mode: the proxy strips the page's own scripts (the escape hatch
+   *  for a page that paints nothing under the proxy — frame-busters, canonical
+   *  self-redirects, scripts that die in the sandbox's opaque origin). */
+  const [proxyNoScript, setProxyNoScript] = useState(false)
+  /** Leave proxy mode (a navigation, or the user restoring the direct load). */
+  const leaveProxy = (): void => {
+    autoStartRef.current = false
+    if (proxied) {
+      picker.cancel()
+      setProxied(false)
+      setProxyToken(null)
+      setProxyNoScript(false)
+    }
+  }
+  /** Stable handle so the Esc effect never re-subscribes on every render. */
+  const leaveProxyRef = useRef<() => void>(() => {})
+  leaveProxyRef.current = (): void => {
+    leaveProxy()
+    setReloadKey(key => key + 1)
+  }
+  /** Enter proxy mode: mint the provider's capability token, then swap the src. */
+  const startProxiedPicking = (): void => {
+    if (elementSelection === undefined) return
+    autoStartRef.current = true
+    void elementSelection.fetchProxyToken().then((token) => {
+      setProxyToken(token)
+      setProxied(true)
+    }).catch(() => {
+      autoStartRef.current = false
+      setMessage(t('pickElementProxyFailed'))
+    })
+  }
+  /**
+   * Esc while the frame is proxied but no session is running — the gap between
+   * pressing the crosshair and the injected bridge answering, and the state left
+   * after one capture — leaves proxy mode and restores the direct page. During a
+   * live session the picker's own Esc handler cancels the capture first, so the
+   * two layers peel off in the order the user expects.
+   */
+  const proxiedIdle = proxied && !picker.picking
+  useEffect(() => {
+    if (!proxiedIdle) return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      leaveProxyRef.current()
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => { window.removeEventListener('keydown', onKeyDown, true) }
+  }, [proxiedIdle])
   // Probe every navigation (address bar, history, restored path): when the
   // target forbids embedding, show the reason + open-in-browser instead of
   // the browser's cryptic "refused to connect" blank frame. A failed probe
@@ -90,6 +211,7 @@ export function BrowserView(props: TabComponentProps) {
   const navigateTo = (raw: string): void => {
     const result = normalizeBrowserUrl(raw, window.location.origin)
     if (result.kind === 'ok') {
+      leaveProxy()
       const next = result.url
       setUrl(next)
       setInput(next)
@@ -109,6 +231,7 @@ export function BrowserView(props: TabComponentProps) {
 
   const goBack = (): void => {
     if (cursor <= 0) return
+    leaveProxy()
     const next = history[cursor - 1]!
     setCursor(cursor - 1)
     setUrl(next)
@@ -118,6 +241,7 @@ export function BrowserView(props: TabComponentProps) {
 
   const goForward = (): void => {
     if (cursor >= history.length - 1) return
+    leaveProxy()
     const next = history[cursor + 1]!
     setCursor(cursor + 1)
     setUrl(next)
@@ -176,6 +300,32 @@ export function BrowserView(props: TabComponentProps) {
         >
           <IconLinkOutline14 />
         </button>
+        {elementSelection !== undefined && (
+          <button
+            type="button"
+            className={clsx(css.iconButton, picker.picking && css.iconButtonActive)}
+            aria-label={picker.picking ? t('pickElementCancel') : t('pickElement')}
+            title={picker.picking
+              ? t('pickElementCancel')
+              : picker.ready ? t('pickElement')
+              : canProxy ? t('pickElementViaProxy')
+              : t('pickElementUnsupported')}
+            disabled={url === undefined || (!picker.ready && !canProxy)}
+            aria-pressed={picker.picking}
+            onClick={() => {
+              // Direct load with a bridge (a page we serve) or a live session:
+              // plain toggle. A remote page has no bridge — re-serve it through
+              // the provider's proxy first and start once it answers.
+              if (picker.ready || picker.picking || proxied) {
+                picker.toggle()
+                return
+              }
+              startProxiedPicking()
+            }}
+          >
+            <IconCrosshairOutline16 size={15} />
+          </button>
+        )}
         <button
           type="button"
           className={css.iconButton}
@@ -189,7 +339,35 @@ export function BrowserView(props: TabComponentProps) {
           <IconRightUpOutline16 size={15} />
         </button>
       </div>
-      {message !== null && <div className={css.browserMessage}>{message}</div>}
+      {proxied && (
+        <div className={css.browserMessage}>
+          {proxyNoScript ? t('browserProxyStaticNotice') : t('browserProxyNotice')}
+          {!proxyNoScript && (
+            <button
+              type="button"
+              className={css.browserProxyRestore}
+              onClick={() => {
+                // A blank/broken proxied page: retry without the page's scripts.
+                autoStartRef.current = true
+                setProxyNoScript(true)
+                setReloadKey(key => key + 1)
+              }}
+            >
+              {t('browserProxyStatic')}
+            </button>
+          )}
+          <button
+            type="button"
+            className={css.browserProxyRestore}
+            onClick={() => { leaveProxy(); setReloadKey(key => key + 1) }}
+          >
+            {t('browserProxyRestore')}
+          </button>
+        </div>
+      )}
+      {(message ?? picker.notice) !== null && (
+        <div className={css.browserMessage}>{message ?? picker.notice}</div>
+      )}
       <SandboxStatusBar
         sandboxed={!noSandbox}
         local={localUnlock}
@@ -199,7 +377,7 @@ export function BrowserView(props: TabComponentProps) {
       />
       {url === undefined ? (
         <div className={css.browserStart}>{t('browserStart')}</div>
-      ) : embedBlocked !== null && !forceEmbed ? (
+      ) : embedBlocked !== null && !forceEmbed && !proxied ? (
         <BrowserEmbedBlocked
           url={embedBlocked}
           onOpenInBrowser={() => { window.open(embedBlocked, '_blank', 'noopener') }}
@@ -207,13 +385,17 @@ export function BrowserView(props: TabComponentProps) {
         />
       ) : (
         <iframe
-          key={`${reloadKey}:${noSandbox ? 'ns' : 'sb'}`}
+          key={`${reloadKey}:${noSandbox ? 'ns' : 'sb'}:${proxied ? 'px' : 'dx'}:${proxyNoScript ? 'ns0' : 'js'}`}
+          ref={frameRef}
           className={css.browserFrame}
-          src={url}
+          src={proxied && proxyToken !== null && elementSelection !== undefined
+            ? elementSelection.encodeProxyUrl(url, proxyToken, proxyNoScript)
+            : url}
           sandbox={noSandbox ? undefined : BROWSER_IFRAME_SANDBOX}
           referrerPolicy="no-referrer"
           allow=""
           title={url}
+          onLoad={picker.handleLoad}
         />
       )}
     </div>

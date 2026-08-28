@@ -307,6 +307,14 @@
   cursor: default;
 }
 
+/* Toggled-on icon button (the element-picker crosshair while picking): the
+   accent-tinted state the app uses for pressed toolbar toggles. */
+.iconButtonActive,
+.iconButtonActive:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-selected, var(--dsw-alias-interactive-bg-hover));
+  color: var(--dsw-alias-label-primary);
+}
+
 /* ── Workbench / split panes ───────────────────────────────────────────── */
 
 .workbench {
@@ -1105,6 +1113,39 @@
   background: var(--dsw-alias-bg-base);
 }
 
+/* The HTML preview body: positions the element-picker toggle (and its hint)
+   over the iframe's top-right corner — the preview has no toolbar row of its
+   own in merged editor mode, so the control rides the surface. */
+.htmlPreview {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.htmlPickToggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l1);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
+}
+
+.htmlPickNotice {
+  position: absolute;
+  top: 42px;
+  right: 8px;
+  max-width: 260px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-layer-1));
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  pointer-events: none;
+}
+
 /* ── Browser tab ──────────────────────────────────────────────────────── */
 
 .browser {
@@ -1146,6 +1187,19 @@
   font: var(--dsw-font-xxxs-11);
   color: var(--dsw-alias-state-warn-label);
   background: var(--dsw-alias-state-warn-tertiary);
+}
+
+/* Inline action inside the warning row (the picker proxy's "load directly"
+   escape): a text button that inherits the row's warning color. */
+.browserProxyRestore {
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .browserFrame {
