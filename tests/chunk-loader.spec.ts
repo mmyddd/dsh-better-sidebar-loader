@@ -19,6 +19,7 @@ import {
   loadChunk,
   registerChunkForTests,
   resetChunks,
+  setChunkModuleSystem,
   setChunkScriptLoaderForTests,
 } from '../src/client/chunk-loader.ts'
 import type { ChunkExports } from '../src/client/chunk-loader.ts'
@@ -189,6 +190,48 @@ describe('production path (script injection + global registry + externals requir
   it('resetChunks is a safe no-op without a module system', () => {
     resetChunks()
     expect(() => resetChunks()).not.toThrow()
+  })
+})
+
+describe('activation-injected module system (dsh 0.1.0-rc.8+: no global)', () => {
+  it('materializes chunks through the injected module system when the global is absent', async () => {
+    const fake: FakeModuleSystem = {
+      import: vi.fn(async (specifier: string) => ({ seed: specifier })),
+    }
+    setChunkModuleSystem(fake)
+    const loaded: string[] = []
+    setChunkScriptLoaderForTests(async (src) => {
+      loaded.push(src)
+      simulateScript('editor', () => ({ TextEditor: 'text-editor' }))
+    })
+    await expect(loadChunk('editor')).resolves.toEqual({ TextEditor: 'text-editor' })
+    expect(loaded).toEqual(['/sidebar/bundle/editor.js'])
+    expect(fake.import).toHaveBeenCalledTimes(CHUNK_EXTERNALS.length)
+  })
+
+  it('prefers the injected instance over the legacy global', async () => {
+    const global = installModuleSystem()
+    const injected: FakeModuleSystem = {
+      import: vi.fn(async (specifier: string) => ({ seed: specifier })),
+    }
+    setChunkModuleSystem(injected)
+    setChunkScriptLoaderForTests(async () => { simulateScript('terminal', () => ({})) })
+    await loadChunk('terminal')
+    expect(injected.import).toHaveBeenCalledTimes(CHUNK_EXTERNALS.length)
+    expect(global.import).not.toHaveBeenCalled()
+  })
+
+  it('resetChunks clears the injected module system (the next activation re-injects it)', async () => {
+    const fake: FakeModuleSystem = {
+      import: vi.fn(async (specifier: string) => ({ seed: specifier })),
+    }
+    setChunkModuleSystem(fake)
+    resetChunks()
+    await expect(loadChunk('editor')).rejects.toThrow('client module system unavailable')
+    // Re-injection (the next apply) restores the path.
+    setChunkModuleSystem(fake)
+    setChunkScriptLoaderForTests(async () => { simulateScript('editor', () => ({ ok: true })) })
+    await expect(loadChunk('editor')).resolves.toEqual({ ok: true })
   })
 })
 

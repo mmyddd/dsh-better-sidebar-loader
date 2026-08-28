@@ -22,9 +22,10 @@
  *    script; the official /plugins/<id>/client.js route cannot serve
  *    arbitrary file names, so the plugin's own host route serves the chunks),
  * 2. read the factory from the global registry,
- * 3. call it with a require that resolves the platform externals through
- *    `__DSH_MODULES__.import(spec)` — the seed-word branch, the one part of
- *    the module system that is stable across versions.
+ * 3. call it with a require that resolves the platform externals through the
+ *    client module system's `import(spec)` — the seed-word branch, the one
+ *    part of the module system that is stable across versions (see
+ *    {@link moduleSystem} for how the module system itself is reached).
  *
  * Caching contract (three layers, each with a failure path):
  * - In-memory: one in-flight promise per chunk, memoized until
@@ -74,14 +75,40 @@ export const CHUNK_EXTERNALS: readonly string[] = [
 /** Chunk script endpoint served by the plugin host half (src/bundle-route.ts). */
 const CHUNK_URL = (name: ChunkName): string => `/sidebar/bundle/${name}.js`
 
-/** The client module system surface this loader needs (window.__DSH_MODULES__). */
-interface ChunkModuleSystem {
+/**
+ * The client module system surface this loader needs. Reached through two
+ * channels, in priority order:
+ * 1. the activation-injected instance ({@link setChunkModuleSystem}) — dsh
+ *    0.1.0-rc.8+ no longer exposes the module system globally; the shell
+ *    hands the same instance to every client plugin as `ctx.loader.internal`;
+ * 2. the legacy `window.__DSH_MODULES__` global — installed by dsh
+ *    ≤ 0.1.0-rc.7 during web boot (kept as the fallback for old shells).
+ */
+export interface ChunkModuleSystem {
   import(specifier: string): Promise<unknown>
 }
 
-/** Resolve the shell-installed module system (set before any plugin activates). */
+/**
+ * The module system handed in by the client plugin body at activation time
+ * (channel 1 above). One per activation; HMR re-activation re-sets it after
+ * {@link resetChunks} clears the previous one.
+ */
+let injectedModuleSystem: ChunkModuleSystem | undefined
+
+/**
+ * Hand the chunk loader the client module system from the plugin's own
+ * cordis context (`ctx.loader.internal` on dsh 0.1.0-rc.8+). Called once per
+ * client activation; pass undefined on shells that do not carry it (older
+ * versions fall back to the global inside {@link moduleSystem}).
+ */
+export function setChunkModuleSystem(modules: ChunkModuleSystem | undefined): void {
+  injectedModuleSystem = modules
+}
+
+/** Resolve the module system: the activation-injected instance first, then the legacy shell global. */
 function moduleSystem(): ChunkModuleSystem | undefined {
-  return (globalThis as { __DSH_MODULES__?: ChunkModuleSystem }).__DSH_MODULES__
+  return injectedModuleSystem
+    ?? (globalThis as { __DSH_MODULES__?: ChunkModuleSystem }).__DSH_MODULES__
 }
 
 /** The plugin-owned chunk factory registry the chunk scripts populate. */
@@ -187,12 +214,15 @@ export function loadChunk(name: ChunkName): Promise<ChunkExports> {
 
 /**
  * Drop all chunk state for a fresh plugin activation (HMR-safe): clear the
- * in-memory cache and any test-registry entries, so the next lazy open
- * re-fetches and re-executes the current chunk scripts (the registry slots
- * are overwritten by the re-execution — no cleanup needed).
+ * in-memory cache, any test-registry entries, and the injected module system
+ * (the next activation re-injects it via {@link setChunkModuleSystem}), so
+ * the next lazy open re-fetches and re-executes the current chunk scripts
+ * (the registry slots are overwritten by the re-execution — no cleanup
+ * needed).
  */
 export function resetChunks(): void {
   cache.clear()
   testLoaders.clear()
   externalsRequire = undefined
+  injectedModuleSystem = undefined
 }

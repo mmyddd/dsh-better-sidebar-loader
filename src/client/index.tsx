@@ -13,7 +13,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import type { Context } from '../context-types.ts'
 import { createSidebarStore } from './state.ts'
 import { createBetterSidebarService, matchUrlTarget } from './service.ts'
-import { resetChunks } from './chunk-loader.ts'
+import { resetChunks, setChunkModuleSystem, type ChunkModuleSystem } from './chunk-loader.ts'
 import { registerBuiltins } from './builtins/index.ts'
 import { Sidebar } from './Sidebar.tsx'
 import { RenderBoundary } from './RenderBoundary.tsx'
@@ -94,6 +94,12 @@ export function apply(ctx: Context): void {
     // registered by a previous fiber (HMR) and drop the in-memory load cache
     // so the next lazy open re-fetches the current chunk scripts.
     resetChunks()
+    // dsh 0.1.0-rc.8+ no longer installs window.__DSH_MODULES__; the shell
+    // hands the same client module system to every plugin as
+    // `ctx.loader.internal`. Inject it into the chunk loader so the lazy
+    // editor/terminal chunks materialize on every dsh version (older shells
+    // fall back to the legacy global inside the chunk loader).
+    setChunkModuleSystem((ctx as unknown as { loader?: { internal?: ChunkModuleSystem } }).loader?.internal)
     ctx.effect(() => {
       let disposed = false
       let root: Root | undefined
