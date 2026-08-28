@@ -70,7 +70,32 @@ export const CHUNK_EXTERNALS: readonly string[] = [
   '@deepseek-ai/dsh-client-ui-primitives',
   '@deepseek-ai/dsh-client-schema-form',
   '@deepseek-ai/dsh-client-runtime/client',
+  // dshloader stable subpaths (resolved through CHUNK_PACKAGE_ALIASES below).
+  '@dsh-plugin/dsh-loader/ui-slots',
+  '@dsh-plugin/dsh-loader/ui-settings',
+  '@dsh-plugin/dsh-loader/web-react',
+  '@dsh-plugin/dsh-loader/ui-primitives',
+  '@dsh-plugin/dsh-loader/schema-form',
+  '@dsh-plugin/dsh-loader/runtime',
 ]
+
+/**
+ * dshloader stable subpath → real platform package (source of truth:
+ * @dsh-plugin/dsh-loader's client adapter `packageAliases`). The platform
+ * module table only carries the real names; the stable-name mapping is
+ * normally applied by dshloader's `__ModuleLoader__.load` wrapper to bundle
+ * factories — a path this loader's own chunk require does not traverse — so
+ * the mapping is mirrored here and each stable spec is pre-resolved to its
+ * real target when the externals table is built.
+ */
+export const CHUNK_PACKAGE_ALIASES: Readonly<Record<string, string>> = {
+  '@dsh-plugin/dsh-loader/ui-primitives': '@deepseek-ai/dsh-client-ui-primitives',
+  '@dsh-plugin/dsh-loader/ui-slots': '@deepseek-ai/dsh-client-ui-slots',
+  '@dsh-plugin/dsh-loader/web-react': '@deepseek-ai/dsh-client-web-react',
+  '@dsh-plugin/dsh-loader/schema-form': '@deepseek-ai/dsh-client-schema-form',
+  '@dsh-plugin/dsh-loader/ui-settings': '@deepseek-ai/dsh-client-ui-settings/client',
+  '@dsh-plugin/dsh-loader/runtime': '@deepseek-ai/dsh-client-runtime/client',
+}
 
 /** Chunk script endpoint served by the plugin host half (src/bundle-route.ts). */
 const CHUNK_URL = (name: ChunkName): string => `/sidebar/bundle/${name}.js`
@@ -162,7 +187,7 @@ async function buildExternalsRequire(modules: ChunkModuleSystem): Promise<(spec:
   // actually requires it — only then it is a loud error.
   const entries = await Promise.all(CHUNK_EXTERNALS.map(async (spec) => {
     try {
-      return [spec, await modules.import(spec)] as const
+      return [spec, await modules.import(CHUNK_PACKAGE_ALIASES[spec] ?? spec)] as const
     } catch {
       return [spec, undefined] as const
     }

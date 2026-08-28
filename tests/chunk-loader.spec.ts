@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import './browser-globals.ts'
 import {
   CHUNK_EXTERNALS,
+  CHUNK_PACKAGE_ALIASES,
   loadChunk,
   registerChunkForTests,
   resetChunks,
@@ -248,6 +249,39 @@ describe('externals contract', () => {
       '@deepseek-ai/dsh-client-ui-primitives',
       '@deepseek-ai/dsh-client-schema-form',
       '@deepseek-ai/dsh-client-runtime/client',
+      '@dsh-plugin/dsh-loader/ui-slots',
+      '@dsh-plugin/dsh-loader/ui-settings',
+      '@dsh-plugin/dsh-loader/web-react',
+      '@dsh-plugin/dsh-loader/ui-primitives',
+      '@dsh-plugin/dsh-loader/schema-form',
+      '@dsh-plugin/dsh-loader/runtime',
     ])
+  })
+
+  it('dshloader stable subpaths resolve through the mirrored package-alias map', () => {
+    expect(CHUNK_PACKAGE_ALIASES).toEqual({
+      '@dsh-plugin/dsh-loader/ui-primitives': '@deepseek-ai/dsh-client-ui-primitives',
+      '@dsh-plugin/dsh-loader/ui-slots': '@deepseek-ai/dsh-client-ui-slots',
+      '@dsh-plugin/dsh-loader/web-react': '@deepseek-ai/dsh-client-web-react',
+      '@dsh-plugin/dsh-loader/schema-form': '@deepseek-ai/dsh-client-schema-form',
+      '@dsh-plugin/dsh-loader/ui-settings': '@deepseek-ai/dsh-client-ui-settings/client',
+      '@dsh-plugin/dsh-loader/runtime': '@deepseek-ai/dsh-client-runtime/client',
+    })
+  })
+
+  it('a chunk requiring a stable subpath gets the module imported under its real name', async () => {
+    const modules = installModuleSystem()
+    setChunkScriptLoaderForTests(async () => {
+      simulateScript('editor', (require) => ({
+        Button: (require('@dsh-plugin/dsh-loader/ui-primitives') as { seed: string }).seed,
+      }))
+    })
+    await expect(loadChunk('editor')).resolves.toEqual({
+      Button: '@deepseek-ai/dsh-client-ui-primitives',
+    })
+    // The module table was asked for the REAL package name, never the alias.
+    const specs = modules.import.mock.calls.map((call) => call[0])
+    expect(specs).toContain('@deepseek-ai/dsh-client-ui-primitives')
+    expect(specs).not.toContain('@dsh-plugin/dsh-loader/ui-primitives')
   })
 })
