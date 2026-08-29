@@ -26,7 +26,10 @@ import { languageForPath } from './lang.ts'
 import { cmSurfaceTheme, CmThemeCompartment } from './cm-themes.ts'
 import { isDarkScheme, subscribeColorScheme } from './theme.ts'
 import { SandboxStatusBar } from './SandboxStatusBar.tsx'
-import { appendToDraft } from './conversation-draft.ts'
+import { appendToDraft, readDraft } from './conversation-draft.ts'
+import { useAbsentPicker, useElementSelection } from './element-selection.ts'
+import type { ElementSelectionApi } from './element-selection.ts'
+import { IconCrosshairOutline16 } from './icons.tsx'
 import { buildSelectionInsert, linesOfSelection } from './selection-payload.ts'
 import { lazyChunkComponent } from './lazy-chunk.tsx'
 import { splitMermaidBlocks, type MermaidMarkdownProps } from './mermaid-blocks.ts'
@@ -63,8 +66,26 @@ const LazyMermaidMarkdown = lazyChunkComponent<MermaidMarkdownProps>(
  */
 export const HTML_IFRAME_SANDBOX = 'allow-scripts allow-popups allow-downloads allow-modals'
 
+/**
+ * The text/HTML viewer. The element-selection plugin (optional) may publish its
+ * client API before or after this bundle loads, so its presence is read here and
+ * the body is REMOUNTED when it flips: inside a mount the hook order is stable,
+ * which is what lets the body call the provider's hook (or the absent stand-in)
+ * unconditionally.
+ */
 export function TextEditor(props: FileViewerProps) {
-  const { ctx, scope, path, viewerId, content, truncated } = props
+  const elementSelection = useElementSelection()
+  return (
+    <TextEditorBody
+      key={elementSelection === undefined ? 'no-picker' : 'picker'}
+      {...props}
+      elementSelection={elementSelection}
+    />
+  )
+}
+
+function TextEditorBody(props: FileViewerProps & { elementSelection: ElementSelectionApi | undefined }) {
+  const { ctx, scope, path, viewerId, content, truncated, elementSelection } = props
   const [mode, setMode] = useState<ViewMode>('preview')
   /** The editor's current text (null while clean); preview renders this. */
   const [draft, setDraft] = useState<string | null>(null)
@@ -307,6 +328,26 @@ export function TextEditor(props: FileViewerProps) {
   // access.
   const [localUnlock, setLocalUnlock] = useState(() => props.store?.getPrefs().htmlViewerDefaultUnsafe === true)
   const htmlNoSandbox = props.store?.getPrefs().htmlViewerNoSandbox === true || localUnlock
+  /** The live preview iframe (the element picker posts into its contentWindow). */
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  // The element picker of the HTML preview: when the element-selection plugin is
+  // mounted, the served document carries its bridge (the /sidebar/html route
+  // pipes html through the provider's injector), the ready handshake answers and
+  // the crosshair toggle captures one element into the composer draft — the same
+  // insertion path as the selection popup. Without the plugin the crosshair is
+  // not rendered. One of these two hooks runs for the whole life of this mount
+  // (the parent keys the remount on the provider's presence).
+  const pickerOptions = {
+    frame: () => frameRef.current,
+    onPicked: (element: { tagName: string; pageUrl: string }) => {
+      // ZCode numbers its blocks inside one "# Web page elements:" section;
+      // reading the draft first keeps that numbering when several elements are
+      // picked into the same message.
+      const insert = elementSelection?.buildWebElementInsert(element, readDraft(ctx, scope.sessionId))
+      if (insert !== undefined) appendToDraft(ctx, scope.sessionId, insert, '\n\n')
+    },
+  }
+  const picker = elementSelection === undefined ? useAbsentPicker() : elementSelection.useElementPicker(pickerOptions)
 
   // Host-toolbar mode (the merged editor header renders the controls): skip
   // the own toolbar row, report the state after every relevant render (the
@@ -405,18 +446,36 @@ export function TextEditor(props: FileViewerProps) {
             onUnlock={() => { setLocalUnlock(true) }}
             onRestore={() => { setLocalUnlock(false) }}
           />
-          {/* Route-src (never srcdoc — a srcdoc frame inherits the parent
-              origin when unsandboxed; the route URL keeps the frame
-              cross-origin by construction). The preview shows the SAVED
-              file; the draft is only visible in edit mode. */}
-          <iframe
-            className={css.editorHtml}
-            src={htmlUrl(scope, path)}
-            sandbox={htmlNoSandbox ? undefined : HTML_IFRAME_SANDBOX}
-            referrerPolicy="no-referrer"
-            allow=""
-            title={path}
-          />
+          <div className={css.htmlPreview}>
+            {/* Route-src (never srcdoc — a srcdoc frame inherits the parent
+                origin when unsandboxed; the route URL keeps the frame
+                cross-origin by construction). The preview shows the SAVED
+                file; the draft is only visible in edit mode. */}
+            <iframe
+              ref={frameRef}
+              className={css.editorHtml}
+              src={htmlUrl(scope, path)}
+              sandbox={htmlNoSandbox ? undefined : HTML_IFRAME_SANDBOX}
+              referrerPolicy="no-referrer"
+              allow=""
+              title={path}
+              onLoad={picker.handleLoad}
+            />
+            {elementSelection !== undefined && (
+              <button
+                type="button"
+                className={clsx(css.iconButton, css.htmlPickToggle, picker.picking && css.iconButtonActive)}
+                aria-label={picker.picking ? t('pickElementCancel') : t('pickElement')}
+                title={picker.ready ? (picker.picking ? t('pickElementCancel') : t('pickElement')) : t('pickElementUnsupported')}
+                disabled={!picker.ready}
+                aria-pressed={picker.picking}
+                onClick={() => { picker.toggle() }}
+              >
+                <IconCrosshairOutline16 size={15} />
+              </button>
+            )}
+            {picker.notice !== null && <div className={css.htmlPickNotice}>{picker.notice}</div>}
+          </div>
         </>
       )}
       {popup !== null && createPortal(

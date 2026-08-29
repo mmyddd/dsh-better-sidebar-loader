@@ -108,3 +108,16 @@ export const IconGlobeOutline16 = ({ size = 16, className }: IconProps) => (
     <path d="M1.5 8h13M8 1.5c-2.4 1.8-2.4 11.2 0 13M8 1.5c2.4 1.8 2.4 11.2 0 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
   </svg>
 )
+
+/**
+ * Element-picker glyph (the "选择网页元素加入聊天" toggle): a crosshair —
+ * a centered ring with four tick marks, the universal "point at a thing on
+ * the page" mark. Same outline style as the rest of the set.
+ */
+export const IconCrosshairOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="8" cy="8" r="4" stroke="currentColor" strokeWidth="1.5" />
+    <path d="M8 1v2.5M8 12.5V15M1 8h2.5M12.5 8H15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" />
+  </svg>
+)

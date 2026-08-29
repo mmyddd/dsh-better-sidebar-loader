@@ -31,6 +31,7 @@ import {
 import { isWithin, parentOf, requireAbsolute, listDirectory, rootLabel } from './fs-tree.ts'
 import { searchFiles } from './fs-search.ts'
 import { decodeHtmlUrl } from './html-route.ts'
+import { withPickerBridge } from './element-selection-host.ts'
 import { extractFrameAncestors } from './browser-probe.ts'
 import { isTrustedApiRequest, isLoopbackHostname } from './trust-fence.ts'
 import { registerBundleRoute } from './bundle-route.ts'
@@ -505,8 +506,10 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
   // turns the feature on, and turning it off mid-session unregisters the
   // tools and releases the agent terminals they created.
   let toolsDisposers: (() => void) | null = null
-  const syncToolsGate = (scope: { get(): SidebarPrefs }): void => {
-    if (scope.get().agentTerminalTools) {
+  // Passing no scope closes the gate: the settings fiber unloaded, so the
+  // tools it enabled must go with it.
+  const syncToolsGate = (scope?: { get(): SidebarPrefs }): void => {
+    if (scope?.get().agentTerminalTools === true) {
       if (toolsDisposers === null) {
         // Degraded mode (node-pty unavailable): never register the terminal
         // tools — every one of them would fail at spawn time.
@@ -522,13 +525,22 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
       agentPtyRegistry?.disposeAll()
     }
   }
-  // Settings namespace: registered through the loader's stable settings
-  // API. Deployments without a settings service never fill the face and
-  // the client falls back to the schema defaults — same graceful downgrade
-  // the original had.
-  const loaderSettings = ctx.dshLoader.settings
-  const scope = loaderSettings.register<SidebarPrefs>(SIDEBAR_PREFS_NS, PrefsSchema)
-  if (scope !== undefined) {
+  // Settings namespace: registered through the loader's stable settings API.
+  // The `settings` service is a cordis Service with an async init, so it is
+  // NOT in the registry yet when this fiber activates on `dshLoader` alone:
+  // registering eagerly here returned undefined on every boot and left the
+  // side card permanently faceless — the client showed the schema defaults
+  // and every save answered 503 "the settings service is not mounted in this
+  // deployment". A nested inject fiber waits for the service instead, and
+  // cordis re-runs this body whenever that service reloads, while the routes
+  // and terminals above stay up across the reload. Deployments without a
+  // settings service never run it at all: the face stays undefined and the
+  // client falls back to the schema defaults — same graceful downgrade the
+  // original had.
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const loaderSettings = settingsCtx.dshLoader.settings
+    const scope = loaderSettings.register<SidebarPrefs>(SIDEBAR_PREFS_NS, PrefsSchema)
+    if (scope === undefined) return
     const ns: string = settingsNamespace(SIDEBAR_PREFS_NS)
     // Owner-scope reads: the loader's describe() is filtered by its browser
     // whitelist, so a plugin reads its OWN non-whitelisted namespace through
@@ -570,7 +582,15 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
     // and keep them in sync with every settings commit.
     syncToolsGate({ get: () => scope.get() })
     scope.watch(() => { syncToolsGate({ get: () => scope.get() }) })
-  }
+    // Teardown (settings service reload, or plugin unload): drop the face so
+    // the routes answer the honest 503 again instead of writing through a
+    // dead scope, and close the tools gate so the next activation re-reads
+    // the fresh one.
+    settingsCtx.effect(() => () => {
+      settingsFace = undefined
+      syncToolsGate()
+    })
+  })
 
   // ── JSON API ────────────────────────────────────────────────────────────
   const api = buildApi(ctx, ptyManager, agentPtyRegistry, resolved, () => settingsFace)
@@ -696,6 +716,15 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
         }
         const type = mediaTypeForPath(absolute)
         const body = await readFile(absolute)
+        // Element-picker bridge ("选择网页元素加入聊天"): when the optional
+        // element-selection plugin is mounted, every HTML DOCUMENT served here
+        // is piped through its injector (assets stay byte-identical) and the
+        // preview becomes pickable; without that plugin the document is served
+        // untouched. The preview frame is opaque-origin — the sandbox attribute
+        // plus the CSP sandbox directive below — so the GUI can never reach into
+        // its DOM: the picker lives INSIDE the document and answers over
+        // postMessage (see src/element-selection-host.ts).
+        const payload = type === 'text/html' ? withPickerBridge(body.toString('utf8')) : body
         res.writeHead(200, {
           'content-type': type,
           'cache-control': 'no-cache',
@@ -706,11 +735,19 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
           // object-src 'none' blocks plugin embeds.
           'content-security-policy': "sandbox allow-scripts allow-popups allow-downloads allow-modals; object-src 'none'",
         })
-        res.end(body)
+        res.end(payload)
       } catch (error) {
         writeError(res, error)
       }
   }), 'dsh-better-sidebar: /sidebar/html preview route')
+
+  // The element-picker proxy route lives in its own plugin
+  // (@dsh-plugin/dsh-bettersidebar-element-selection): a remote page's bytes
+  // must come from the host for the picker to reach it, and that whole
+  // apparatus — the SSRF fence, the charset handling, the capability token —
+  // belongs with the picker, not with this sidebar. This sidebar only pipes its
+  // OWN html previews through the provider's injector (see withPickerBridge
+  // above) and renders the crosshair when the client half is published.
 
   // ── Terminal WebSocket ──────────────────────────────────────────────────
   // One upgrade endpoint serves both UI-tab terminals (?tab=...) and
