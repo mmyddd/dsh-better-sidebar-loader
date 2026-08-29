@@ -93,7 +93,10 @@ describe('element picker toggle (browser tab)', () => {
     // No bridge can answer on a remote origin, but the page IS proxyable, so
     // the action stays available and explains what pressing it will do.
     expect(html).toContain('title="' + zh.pickElementViaProxy + '"')
-    expect(html).not.toContain('disabled=""')
+    // Scope the check to the toggle itself: the toolbar's back/forward
+    // buttons are disabled too (empty history), so a blanket
+    // not.toContain('disabled=""') can never hold.
+    expect(html).not.toContain('title="' + zh.pickElementViaProxy + '" disabled=""')
     expect(html).not.toContain(zh.pickElementCancel)
     expect(html).not.toContain(zh.browserProxyNotice)
   })

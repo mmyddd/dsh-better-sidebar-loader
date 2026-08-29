@@ -16,7 +16,7 @@ export default defineConfig({
   test: {
     server: {
       deps: {
-        inline: [/@deepseek-ai\/dsh-client-ui-primitives/],
+        inline: [/@dsh-plugin\/dsh-loader[\/\\]src[\/\\]stable[\/\\]ui-primitives/, /@deepseek-ai\/dsh-client-ui-primitives/],
       },
     },
   },
