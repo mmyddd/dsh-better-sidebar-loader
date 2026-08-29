@@ -107,8 +107,6 @@ function BrowserViewBody(props: TabComponentProps & { elementSelection: ElementS
    *  crosshair asks for proxied picking; the sandboxed frame's navigation
    *  carries Origin: null, which the route's fence refuses on its own). */
   const [proxyToken, setProxyToken] = useState<string | null>(null)
-  /** A crosshair press that is waiting for the proxied document's bridge. */
-  const autoStartRef = useRef(false)
   // One of these two hooks runs for the whole life of this mount: the parent
   // keys the remount on the provider's presence, so the call order is stable.
   const pickerOptions = {
@@ -127,23 +125,12 @@ function BrowserViewBody(props: TabComponentProps & { elementSelection: ElementS
   const picker = elementSelection === undefined ? useAbsentPicker() : elementSelection.useElementPicker(pickerOptions)
   /** Whether this address could be re-served by the picker proxy at all. */
   const canProxy = elementSelection?.isProxyablePage(url) ?? false
-  const pickerRef = useRef(picker)
-  pickerRef.current = picker
-  // Proxied picking is a two-step: the crosshair swaps the frame's src, and
-  // the session starts as soon as the injected bridge answers the handshake.
-  useEffect(() => {
-    if (!picker.ready || !autoStartRef.current) return
-    autoStartRef.current = false
-    pickerRef.current.toggle()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picker.ready])
   /** Static mode: the proxy strips the page's own scripts (the escape hatch
    *  for a page that paints nothing under the proxy — frame-busters, canonical
    *  self-redirects, scripts that die in the sandbox's opaque origin). */
   const [proxyNoScript, setProxyNoScript] = useState(false)
   /** Leave proxy mode (a navigation, or the user restoring the direct load). */
   const leaveProxy = (): void => {
-    autoStartRef.current = false
     if (proxied) {
       picker.cancel()
       setProxied(false)
@@ -157,15 +144,22 @@ function BrowserViewBody(props: TabComponentProps & { elementSelection: ElementS
     leaveProxy()
     setReloadKey(key => key + 1)
   }
-  /** Enter proxy mode: mint the provider's capability token, then swap the src. */
+  /**
+   * Enter proxy mode: arm the picker for the document the frame is ABOUT to load,
+   * mint the capability token, then swap the src. The arming is what keeps the
+   * session alive: the injected bridge announces itself while its document is
+   * still parsing, and a session started on that announcement would be wiped by
+   * the load event that follows it.
+   */
   const startProxiedPicking = (): void => {
     if (elementSelection === undefined) return
-    autoStartRef.current = true
+    picker.armForNextDocument()
     void elementSelection.fetchProxyToken().then((token) => {
       setProxyToken(token)
       setProxied(true)
     }).catch(() => {
-      autoStartRef.current = false
+      // Nothing will load, so disarm before reporting.
+      picker.cancel()
       setMessage(t('pickElementProxyFailed'))
     })
   }
@@ -347,8 +341,9 @@ function BrowserViewBody(props: TabComponentProps & { elementSelection: ElementS
               type="button"
               className={css.browserProxyRestore}
               onClick={() => {
-                // A blank/broken proxied page: retry without the page's scripts.
-                autoStartRef.current = true
+                // A blank/broken proxied page: retry without the page's scripts,
+                // and arm the picker for that reload.
+                picker.armForNextDocument()
                 setProxyNoScript(true)
                 setReloadKey(key => key + 1)
               }}

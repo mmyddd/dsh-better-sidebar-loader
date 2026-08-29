@@ -41,7 +41,14 @@ export interface ElementPickerHandle {
   notice: string | null
   /** Start when idle, cancel when picking. */
   toggle: () => void
-  /** Cancel a running session. */
+  /**
+   * Arm a session for the document the frame is ABOUT to load: it begins at the
+   * first handshake that follows the next load, which is what proxied picking
+   * needs (the crosshair swaps the src, and the bridge of the incoming document
+   * announces itself before that document's load event).
+   */
+  armForNextDocument: () => void
+  /** Cancel a running session, and disarm a pending one. */
   cancel: () => void
   /** Must be called from the framed iframe's onLoad (drives the handshake). */
   handleLoad: () => void
@@ -102,6 +109,7 @@ export function useAbsentPicker(): ElementPickerHandle {
     picking: false,
     notice: null,
     toggle: () => {},
+    armForNextDocument: () => {},
     cancel: () => {},
     handleLoad: () => {},
   }))
